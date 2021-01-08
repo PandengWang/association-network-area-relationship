@@ -1,0 +1,1128 @@
+---
+title: "Microbial_association_network-area_relationship"
+author: "Pandeng Wang"
+date: "6/24/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## Load defined functions
+```{r}
+source("Defined_functions_for_NAR.R")
+```
+
+## Read data
+```{r read data}
+library(tidyverse)
+library(picante)
+# read otu table
+bac_sampleXotu <- read_tsv("data/2015_TIL_bac_sampleXotu.tsv")
+
+fungi_sampleXotu <- read_tsv("data/2015_TIL_fungi_sampleXotu.tsv")
+
+# read tree
+bac_tre <- read.tree("data/2015_lsp_bac_final_sub8381.tre")
+fungi_tre <- read.tree("data/2015_lsp_its_final_rooted_sub2790.tre")
+
+# read sample metadata
+sample_metadata <- read_tsv("data/2015_TIL_sample_metadata.tsv")
+sample_metadata <- sample_metadata %>%
+  column_to_rownames(var = "SampleID") %>%
+  .[bac_sampleXotu$SampleID, ] %>%
+  rownames_to_column(var = "SampleID")
+
+plot_metadata <- unique(sample_metadata[,c("plot", "Island", "Island_ID", "plot2", "Island_Class", "area", "logArea")])
+
+# make sure sample orders are same in dfferent data frame
+sample_metadata$SampleID == bac_sampleXotu$SampleID
+sample_metadata$SampleID == fungi_sampleXotu$SampleID
+```
+
+## Figure 1: network properties Vs logArea
+```{r figure1}
+library(SpiecEasi)
+library(cowplot)
+# split sampleXotu table into plot level sampleXotu table
+# and only keep OTU that occur in all 4 samples in each plot
+bac_sampleXotu_plot_f4 <- column_to_rownames(bac_sampleXotu, var = "SampleID") %>%
+  split_sampleXotu_plot(plot = sample_metadata$plot, occurNum = 4)
+
+fungi_sampleXotu_plot_f4 <- column_to_rownames(fungi_sampleXotu, var = "SampleID") %>%
+  split_sampleXotu_plot(plot = sample_metadata$plot, occurNum = 4)
+
+# construct network for each plot using SPIEC-EASI method
+bac_sampleXotu_plot_f4 <- lapply(bac_sampleXotu_plot_f4, as.matrix)
+
+bac_spiec_plot_f4 <- lapply(bac_sampleXotu_plot_f4, spiec.easi, method = "mb", lambda.min.ratio = 3e-1, nlambda=10, pulsar.params = list(rep.num=20))
+
+unlist(lapply(bac_spiec_plot_f4, function(x) sum(getRefit(x))/2))
+
+fungi_sampleXotu_plot_f4 <- lapply(fungi_sampleXotu_plot_f4, as.matrix)
+
+fungi_spiec_plot_f4 <- lapply(fungi_sampleXotu_plot_f4, spiec.easi, method = "mb", lambda.min.ratio = 5e-2, nlambda=10, pulsar.params = list(rep.num=20))
+
+unlist(lapply(fungi_spiec_plot_f4, function(x) sum(getRefit(x))/2))
+
+# convert spiec object to igraph
+bac_spiec_plot_f4_igraph <- lapply(bac_spiec_plot_f4, coff_to_igraph, sym_beta = T)
+
+fungi_spiec_plot_f4_igraph <- lapply(fungi_spiec_plot_f4, coff_to_igraph, sym_beta = T)
+
+# remove isolated vertex
+bac_spiec_plot_f4_igraph_rmIso <- lapply(bac_spiec_plot_f4_igraph, rm_isolated_vertex)
+
+fungi_spiec_plot_f4_igraph_rmIso <- lapply(fungi_spiec_plot_f4_igraph, rm_isolated_vertex)
+
+# calculate network properties
+bac_spiec_plot_f4_igraph_rmIso_5pro <- lapply(bac_spiec_plot_f4_igraph_rmIso, 
+                                               cal_net_property) %>%
+  do.call(rbind, .)
+
+fungi_spiec_plot_f4_igraph_rmIso_5pro <- lapply(fungi_spiec_plot_f4_igraph_rmIso, 
+                                               cal_net_property) %>%
+  do.call(rbind, .)
+
+
+# generate random network and calculate their properties
+bac_spiec_plot_randNet_5pro <- lapply(bac_spiec_plot_f4_igraph_rmIso, collect_randNet_property)
+
+bac_spiec_plot_randNet_5pro_mean <- purrr::map(bac_spiec_plot_randNet_5pro, "mean") %>%
+  bind_rows(.id = "plot") %>%
+  column_to_rownames(var = "plot")
+
+bac_spiec_plot_randNet_5pro_sd <- purrr::map(bac_spiec_plot_randNet_5pro, "sd") %>%
+  bind_rows(.id = "plot") %>%
+  column_to_rownames(var = "plot")
+
+
+fungi_spiec_plot_randNet_5pro <- lapply(fungi_spiec_plot_f4_igraph_rmIso, collect_randNet_property)
+
+fungi_spiec_plot_randNet_5pro_mean <- purrr::map(fungi_spiec_plot_randNet_5pro, "mean") %>%
+  bind_rows(.id = "plot") %>%
+  column_to_rownames(var = "plot")
+
+fungi_spiec_plot_randNet_5pro_sd <- purrr::map(fungi_spiec_plot_randNet_5pro, "sd") %>%
+  bind_rows(.id = "plot") %>%
+  column_to_rownames(var = "plot")
+
+# standardize three network properties
+bac_spiec_plot_f4_igraph_rmIso_3pro_ses <- 
+  (bac_spiec_plot_f4_igraph_rmIso_5pro[,3:5] - bac_spiec_plot_randNet_5pro_mean[,3:5]) / bac_spiec_plot_randNet_5pro_sd[,3:5] 
+
+fungi_spiec_plot_f4_igraph_rmIso_3pro_ses <- 
+  (fungi_spiec_plot_f4_igraph_rmIso_5pro[,3:5] - fungi_spiec_plot_randNet_5pro_mean[,3:5]) / fungi_spiec_plot_randNet_5pro_sd[,3:5] 
+
+# plot network properties Vs logArea
+bac_spiec_plot_df <- bac_spiec_plot_f4_igraph_rmIso_5pro %>%
+  select(network_size, average_degree) %>%
+  rownames_to_column(var = "plot") %>%
+  left_join(rownames_to_column(bac_spiec_plot_f4_igraph_rmIso_3pro_ses, var = "plot"), by = "plot") %>%
+  gather(key = "key", value = "value", -plot) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = as_factor(key))
+
+
+bac_spiec_plot_5pro_logArea_stat <- bac_spiec_plot_df %>% 
+  group_by(key) %>%
+  summarise(r2 = (summary(lm(value ~ logArea)))$r.squared,
+            r2.adj = (summary(lm(value ~ logArea)))$adj.r.squared,
+            p = cor.test(value, logArea)$p.value) %>%
+  mutate(taxon = "Bacteria", 
+         rlabel = paste("R ^ 2 == ", round(r2,3), sep = ""),
+         plabel = paste("italic(P) == ", format(p, 2, scientific = T, digits = 2), sep = ""),
+         x = 6.5,
+         y = -Inf)
+
+
+p_bac_spiec_plot_net_rmIso_5pro <- bac_spiec_plot_df %>%
+  ggplot(aes(x=logArea, y=value)) +
+  geom_point(size=0.5, color = "#E1A970")  +
+  geom_smooth(se=T, method = "lm", size=0.5, color = "#E1A970") +
+  geom_text(data = bac_spiec_plot_5pro_logArea_stat, 
+            aes(x, y, label = rlabel), inherit.aes = F, parse = T, vjust = -2, size = 2) + 
+  geom_text(data = bac_spiec_plot_5pro_logArea_stat, 
+            aes(x, y, label = plabel), inherit.aes = F, parse = T, vjust = -1.5, size = 2) +
+  facet_grid(key ~ taxon, scales = "free_y") +
+  theme_bw(base_size = 8) +
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(breaks=seq(3, 7, 1)) + 
+  ylab("Value") + xlab("log10 Area")
+
+
+
+fungi_spiec_plot_df <- fungi_spiec_plot_f4_igraph_rmIso_5pro %>%
+  select(network_size, average_degree) %>%
+  rownames_to_column(var = "plot") %>%
+  left_join(rownames_to_column(fungi_spiec_plot_f4_igraph_rmIso_3pro_ses, var = "plot"), by = "plot") %>%
+  gather(key = "key", value = "value", -plot) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = as_factor(key))
+
+
+fungi_spiec_plot_5pro_logArea_stat <- fungi_spiec_plot_df %>% 
+  group_by(key) %>%
+  summarise(r2 = (summary(lm(value ~ logArea)))$r.squared,
+            r2.adj = (summary(lm(value ~ logArea)))$adj.r.squared,
+            p = cor.test(value, logArea)$p.value) %>%
+  mutate(taxon = "Fungi", 
+         rlabel = paste("R ^ 2 == ", round(r2,3), sep = ""),
+         plabel = paste("italic(P) == ", format(p, 2, scientific = T, digits = 2), sep = ""),
+         x = 6.5,
+         y = -Inf)
+
+
+p_fungi_spiec_net_rmIso_5pro <- fungi_spiec_plot_df %>%
+  ggplot(aes(x=logArea, y=value)) +
+  geom_point(size=0.5, color = "#29ABE2")  +
+  geom_smooth(se=T, method = "lm", size=0.5, color = "#29ABE2") +
+  geom_text(data = fungi_spiec_plot_5pro_logArea_stat, 
+            aes(x, y, label = rlabel), inherit.aes = F, parse = T, vjust = -2, size = 2) + 
+  geom_text(data = fungi_spiec_plot_5pro_logArea_stat, 
+            aes(x, y, label = plabel), inherit.aes = F, parse = T, vjust = -1.5, size = 2) +
+  facet_grid(key ~ taxon, scales = "free_y") +
+  theme_bw(base_size = 8) +
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(breaks=seq(3, 7, 1)) + 
+  ylab("") + xlab("log10 Area")
+
+# combine bac and fungi
+library(patchwork)
+p_bac_spiec_plot_net_rmIso_5pro + p_fungi_spiec_net_rmIso_5pro
+
+ggsave(filename = "figures/Fig1_network_5pro_logArea.pdf", height = 160, width = 100, units = "mm")
+
+```
+
+## Figure 2: SEM
+```{r figure2} 
+library(piecewiseSEM)
+library(corrplot)
+library(psych)
+
+# mean alpha diversity and beta diversity in each plot
+bac_sampleXotu_plot <- column_to_rownames(bac_sampleXotu, var = "SampleID") %>%
+  split_sampleXotu_plot(plot = sample_metadata$plot)
+
+bac_plot_alpha_beta <- lapply(bac_sampleXotu_plot, cal_plot_alpha_beta_mean)
+
+bac_plot_alpha_beta_df <- bind_rows(bac_plot_alpha_beta, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(taxon = "Bacteria", key = as_factor(as.character(key)))
+
+
+fungi_sampleXotu_plot <- column_to_rownames(fungi_sampleXotu, var = "SampleID") %>%
+  split_sampleXotu_plot(plot = sample_metadata$plot)
+
+fungi_plot_alpha_beta <- lapply(fungi_sampleXotu_plot, cal_plot_alpha_beta_mean)
+
+fungi_plot_alpha_beta_df <- bind_rows(fungi_plot_alpha_beta, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(taxon = "Fungi", key = as_factor(as.character(key)))
+
+# explore soil properties
+soil9 <- column_to_rownames(sample_metadata, var = "SampleID") %>% 
+  select(pH:moisture, Aal, Aca, Amg)
+pairs.panels(soil9)
+# log transform AP, Aca, Amg to approach normal distribution
+soil9$logAP <- log1p(soil9$AP)
+soil9$logAca <- log1p(soil9$Aca)
+soil9$logAmg <- log1p(soil9$Amg)
+pairs.panels(soil9)
+
+soil9_stan <- as.data.frame(scale(soil9)) %>%
+  select(-AP, -Amg, -Aca)
+
+pairs.panels(soil9_stan)
+
+corrplot.mixed(cor(soil9_stan), upper = "ellipse", lower = "number")
+
+soil9_stan_plot <- apply(soil9_stan, 2, function(x) tapply(x, sample_metadata$plot, mean))
+
+cor(soil9_stan_plot, plot_metadata$logArea)
+
+# select three soil properties that have significantly 
+# positive relationship with island area
+soil3_stan_plot <- soil9_stan_plot %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "plot") %>%
+  select(plot, moisture, TOC, TN)
+
+# split sampltXsoil table 
+sampleXsoil_plot <- split_sampleXsoil_plot(soil9_stan, plot = sample_metadata$plot)
+
+# use all soil properties to calculate soil heterogeneity of each plot
+soil_euc_plot <- lapply(sampleXsoil_plot, function(x) data.frame(euc = mean(dist(x))))
+soil_euc_plot <- bind_rows(soil_euc_plot, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot")
+
+# SEM
+# ---- bac ----
+bac_sem_df2 <- bac_plot_alpha_beta_df %>%
+  select(-sd) %>%
+  spread(key = key, value = mean) %>%
+  left_join(soil3_stan_plot, by = "plot") %>%
+  left_join(soil_euc_plot[,c("plot", "euc")], by = "plot") %>%
+  left_join(rownames_to_column(bac_spiec_plot_f4_igraph_rmIso_5pro[,1:2], var = "plot"), by = "plot") %>%
+  left_join(rownames_to_column(bac_spiec_plot_f4_igraph_rmIso_3pro_ses, var = "plot"), by = "plot")
+
+bac_sem_mod2 <- psem(
+  lm(moisture ~ logArea, data = bac_sem_df2),
+  lm(OTUnum ~ logArea + moisture, data = bac_sem_df2),
+  lm(network_size ~ logArea + OTUnum + Jaccard, data = bac_sem_df2),
+  lm(average_degree ~ OTUnum + Jaccard, data = bac_sem_df2),
+  lm(average_gd ~  moisture + OTUnum + Jaccard, data = bac_sem_df2),
+  lm(modu ~ network_size + average_degree + average_gd + OTUnum, data = bac_sem_df2),
+  lm(transi ~ network_size + average_degree + average_gd, data = bac_sem_df2)
+)
+
+summary(bac_sem_mod2)
+
+#---- fungi ----
+fungi_sem_df2 <- fungi_plot_alpha_beta_df %>%
+  select(-sd) %>%
+  spread(key = key, value = mean) %>%
+  left_join(soil3_stan_plot, by = "plot") %>%
+  left_join(soil_euc_plot[,c("plot", "euc")], by = "plot") %>%
+  left_join(rownames_to_column(fungi_spiec_plot_f4_igraph_rmIso_5pro[,1:2], var = "plot"), by = "plot") %>%
+  left_join(rownames_to_column(fungi_spiec_plot_f4_igraph_rmIso_3pro_ses, var = "plot"), by = "plot")
+
+fungi_sem_mod2 <- psem(
+  lm(moisture ~ logArea, data = fungi_sem_df2),
+  lm(Jaccard ~ moisture, data = fungi_sem_df2),
+  lm(OTUnum ~ moisture + logArea, data = fungi_sem_df2),
+  lm(network_size ~ logArea + moisture + OTUnum + Jaccard, data = fungi_sem_df2),
+  lm(average_degree ~ OTUnum + Jaccard, data = fungi_sem_df2),
+  lm(average_gd ~ average_degree, data = fungi_sem_df2),
+  lm(modu ~ moisture + network_size + average_degree + average_gd, data = fungi_sem_df2),
+  lm(transi ~  average_gd + modu, data = fungi_sem_df2)
+)
+
+summary(fungi_sem_mod2)
+```
+
+## Figure S1: spearman correlation network
+```{r}
+# construct network
+bac_spear_plot_f4 <- lapply(bac_sampleXotu_plot_f4, cal_rp_from_sampleXotu)
+
+fungi_spear_plot_f4 <- lapply(fungi_sampleXotu_plot_f4, cal_rp_from_sampleXotu)
+
+# calculate network properties using different coefficient thresholds
+bac_spear_plot_net_2pro <- cal_spearNet_property_use_diffthreshold(bac_spear_plot_f4)
+
+bac_spear_plot_df <- bac_spear_plot_net_2pro %>%
+  left_join(plot_metadata[,c("plot", "logArea")], by = "plot")
+
+fungi_spear_plot_net_2pro <- cal_spearNet_property_use_diffthreshold(fungi_spear_plot_f4)
+
+fungi_spear_plot_df <- fungi_spear_plot_net_2pro %>%
+  left_join(plot_metadata[,c("plot", "logArea")], by = "plot")
+
+# plot net 2pro Vs logArea
+bac_spear_plot_df_stat <- bac_spear_plot_df %>% group_by(key, r) %>%
+  summarise(r2 = (summary(lm(value ~ logArea)))$r.squared,
+            r2.adj = (summary(lm(value ~ logArea)))$adj.r.squared,
+            p = cor.test(value, logArea)$p.value) %>%
+  mutate(taxon = "Bacteria", 
+         rlabel = paste("R ^ 2 == ", round(r2,3), sep = ""),
+         plabel = paste("italic(P) == ", format(p, 2, scientific = T, digits = 2), sep = ""),
+         x = 6.5,
+         y = -Inf)
+
+p_bac_spear_plot <- bac_spear_plot_df %>%
+  ggplot(aes(x=logArea, y=value)) +
+  geom_point(size=0.5, color = "#E1A970")  +
+  geom_smooth(se=T, method = "lm", size=0.5, color = "#E1A970") +
+  geom_text(data = bac_spear_plot_df_stat, 
+            aes(x, y, label = rlabel), inherit.aes = F, parse = T, vjust = -2, size = 2) + 
+  geom_text(data = bac_spear_plot_df_stat, 
+            aes(x, y, label = plabel), inherit.aes = F, parse = T, vjust = -1.5, size = 2) +
+  facet_grid(key ~ r, scales = "free") +
+  theme_bw(base_size = 10) +
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(breaks=seq(3, 7, 1)) + 
+  ylab("Value") + xlab("")
+
+
+fungi_spear_plot_df_stat <- fungi_spear_plot_df %>% group_by(key, r) %>%
+  summarise(r2 = (summary(lm(value ~ logArea)))$r.squared,
+            r2.adj = (summary(lm(value ~ logArea)))$adj.r.squared,
+            p = cor.test(value, logArea)$p.value) %>%
+  mutate(taxon = "Fungi", 
+         rlabel = paste("R ^ 2 == ", round(r2,3), sep = ""),
+         plabel = paste("italic(P) == ", format(p, 2, scientific = T, digits = 2), sep = ""),
+         x = 6.5,
+         y = -Inf)
+
+p_fungi_spear_plot <- fungi_spear_plot_df %>%
+  ggplot(aes(x=logArea, y=value)) +
+  geom_point(size=0.5, color = "#29ABE2")  +
+  geom_smooth(se=T, method = "lm", size=0.5, color = "#29ABE2") +
+  geom_text(data = fungi_spear_plot_df_stat, 
+            aes(x, y, label = rlabel), inherit.aes = F, parse = T, vjust = -2, size = 2) + 
+  geom_text(data = fungi_spear_plot_df_stat, 
+            aes(x, y, label = plabel), inherit.aes = F, parse = T, vjust = -1.5, size = 2) +
+  facet_grid(key ~ r, scales = "free") +
+  theme_bw(base_size = 10) +
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(breaks=seq(3, 7, 1)) + 
+  ylab("Value") + xlab("log10 Area")
+
+# combine bac and fungi
+plot_grid(p_bac_spear_plot, p_fungi_spear_plot, nrow = 2)
+
+ggsave(filename = "FigS1_network_2pro_logArea.pdf", height = 160, width = 180, units = "mm")
+```
+
+## Figure S2: SparCC network
+```{r}
+library(SpiecEasi)
+# calculate sparcc correlation
+bac_sparcc_plot_f4 <- lapply(bac_sampleXotu_plot_f4, sparcc)
+
+fungi_sparcc_plot_f4<- lapply(fungi_sampleXotu_plot_f4, sparcc)
+
+# calculate sparcc p in linux server, this step is very time-consuming
+save(bac_sampleXotu_plot_f4, fungi_sampleXotu_plot_f4, cal_p_for_sparcc, file = "cal_p_for_sparcc.RData")
+
+#~~~~~~~~~~~~~~~~~~~~~~
+#!/usr/bin/env Rscript
+load("cal_p_for_sparcc.RData")
+bac_sparcc_plot_f4_p <- lapply(bac_sampleXotu_plot_f4, cal_p_for_sparcc, times = 999, cores = 50)
+save(bac_sparcc_plot_f4_p, file = "bac_sparcc_plot_f4_p.RData")
+
+fungi_sparcc_plot_f4_p <- lapply(fungi_sampleXotu_plot_f4, cal_p_for_sparcc, times = 999, cores = 50)
+save(fungi_sparcc_plot_f4_p, file = "fungi_sparcc_plot_f4_p.RData")
+#~~~~~~~~~~~~~~~~~~~~~~
+
+
+load("bac_sparcc_plot_f4_p.RData")
+load("fungi_sparcc_plot_f4_p.RData")
+
+for(i in names(bac_sparcc_plot_f4_p)){
+  bac_sparcc_plot_f4[[i]]$p <- bac_sparcc_plot_f4_p[[i]]
+}
+
+for(i in names(fungi_sparcc_plot_f4_p)){
+  fungi_sparcc_plot_f4[[i]]$p <- fungi_sparcc_plot_f4_p[[i]]
+}
+
+# calculate sparcc networks' properties using different thresholds
+bac_sparcc_plot_net_2pro <- cal_sparccNet_property_use_diffthreshold(bac_sparcc_plot_f4)
+
+fungi_sparcc_plot_net_2pro <- cal_sparccNet_property_use_diffthreshold(fungi_sparcc_plot_f4)
+
+
+# plot 
+bac_sparcc_plot_df <- bac_sparcc_plot_net_2pro %>%
+  left_join(plot_metadata[,c("plot", "logArea")], by = "plot")
+
+bac_sparcc_plot_df_stat <- bac_sparcc_plot_df %>% group_by(key, r) %>%
+  summarise(r2 = (summary(lm(value ~ logArea)))$r.squared,
+            r2.adj = (summary(lm(value ~ logArea)))$adj.r.squared,
+            p = cor.test(value, logArea)$p.value) %>%
+  mutate(taxon = "Bacteria", 
+         rlabel = paste("R ^ 2 == ", round(r2,3), sep = ""),
+         plabel = paste("italic(P) == ", format(p, 2, scientific = T, digits = 2), sep = ""),
+         x = 6.5,
+         y = -Inf)
+
+p_bac_sparcc_plot <- bac_sparcc_plot_df %>%
+  ggplot(aes(x=logArea, y=value)) +
+  geom_point(size=0.5, color = "#E1A970")  +
+  geom_smooth(se=T, method = "lm", size=0.5, color = "#E1A970") +
+  geom_text(data = bac_sparcc_plot_df_stat, 
+            aes(x, y, label = rlabel), inherit.aes = F, parse = T, vjust = -2, size = 2) + 
+  geom_text(data = bac_sparcc_plot_df_stat, 
+            aes(x, y, label = plabel), inherit.aes = F, parse = T, vjust = -1.5, size = 2) +
+  facet_grid(key ~ r, scales = "free") +
+  theme_bw(base_size = 10) +
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(breaks=seq(3, 7, 1)) + 
+  ylab("Values") + xlab("")
+
+
+fungi_sparcc_plot_df <- fungi_sparcc_plot_net_2pro %>%
+  left_join(plot_info[,c("plot", "logArea")], by = "plot")
+
+fungi_sparcc_plot_df_stat <- fungi_sparcc_plot_df %>% group_by(key, r) %>%
+  summarise(r2 = (summary(lm(value ~ logArea)))$r.squared,
+            r2.adj = (summary(lm(value ~ logArea)))$adj.r.squared,
+            p = cor.test(value, logArea)$p.value) %>%
+  mutate(taxon = "Fungi", 
+         rlabel = paste("R ^ 2 == ", round(r2,3), sep = ""),
+         plabel = paste("italic(P) == ", format(p, 2, scientific = T, digits = 2), sep = ""),
+         x = 6.5,
+         y = -Inf)
+
+p_fungi_sparcc_plot <- fungi_sparcc_plot_df %>%
+  ggplot(aes(x=logArea, y=value)) +
+  geom_point(size=0.5, color = "#29ABE2")  +
+  geom_smooth(se=T, method = "lm", size=0.5, color = "#29ABE2") +
+  geom_text(data = fungi_sparcc_plot_df_stat, 
+            aes(x, y, label = rlabel), inherit.aes = F, parse = T, vjust = -2, size = 2) + 
+  geom_text(data = fungi_sparcc_plot_df_stat, 
+            aes(x, y, label = plabel), inherit.aes = F, parse = T, vjust = -1.5, size = 2) +
+  facet_grid(key ~ r, scales = "free") +
+  theme_bw(base_size = 10) +
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(breaks=seq(3, 7, 1)) + 
+  ylab("Value")
+
+# combine bac and fungi
+plot_grid(p_bac_sparcc_plot, p_fungi_sparcc_plot, nrow = 2)
+
+ggsave(filename = "FigS2_sparcc_network_2pro_logArea.pdf", height = 160, width = 180, units = "mm")
+```
+
+## Figure S3: The influences of island size on the network properties of soil bacteria and fungi
+```{r}
+library(patchwork)
+# network properties Vs island area class
+bac_spiec_plot_df %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")), 
+         taxon = "Bacteria",
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L"))) %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#E1A970") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_wrap(taxon ~ key, scales = "free_y", ncol = 5) + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none") +
+fungi_spiec_plot_df %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")), 
+         taxon = "Fungi",
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L"))) %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#29ABE2") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_wrap(taxon ~ key, scales = "free_y", ncol = 5) + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none") +
+  plot_layout(nrow = 2)
+
+ggsave(filename = "figures/Fig1_network_2pro_3pro_ses_islandClass.pdf", height = 90, width = 180, units = "mm")
+
+```
+
+```{r stat}
+pairwise.wilcox.test(bac_spiec_plot_f4_igraph_rmIso_5pro$network_size, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spiec_plot_f4_igraph_rmIso_5pro$average_degree, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spiec_plot_f4_igraph_rmIso_3pro_ses$average_gd, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spiec_plot_f4_igraph_rmIso_3pro_ses$modu, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spiec_plot_f4_igraph_rmIso_3pro_ses$transi, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+
+
+pairwise.wilcox.test(fungi_spiec_plot_f4_igraph_rmIso_5pro$network_size, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spiec_plot_f4_igraph_rmIso_5pro$average_degree, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spiec_plot_f4_igraph_rmIso_3pro_ses$average_gd, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spiec_plot_f4_igraph_rmIso_3pro_ses$modu, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spiec_plot_f4_igraph_rmIso_3pro_ses$transi, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+```
+
+## Figure S4: The influences of island area on the network properties of different soil bacterial (A) and fungal (B) functional guilds
+```{bash}
+# fungild
+python Guilds_v1.1.py -otu 2015_TIL_fungi_funguild_input.txt -db fungi -u -m
+
+# FAPROTAX
+python ~/software/FAPROTAX_1.2.3/collapse_table.py -i 2015_TIL_bac_otuXsample_tax.tsv -o 2015_TIL_bac_otuXsample_tax_fun.tsv -g ~/software/FAPROTAX_1.2.3/FAPROTAX.txt -d 'taxonomy' --omit_columns '0' -r 2015_TIL_bac_fun_report.txt -s sub_tables --out_groups2records_table 2015_TIL_bac_otu_fun.txt -v
+```
+
+```{r}
+bac_otuXguild <- read_tsv("data/2015_TIL_bac_otuXguild.txt")
+
+bac_guild2class <- read_tsv("data/bac_guild2class.txt", col_names = F)
+
+bac_otuXclass <- bac_otuXguild %>%
+  select(OTUID, bac_guild2class$X1) %>%
+  column_to_rownames(var = "OTUID") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "X1") %>%
+  left_join(bac_guild2class, by = "X1") %>%
+  group_by(X2) %>%
+  summarise_if(is.numeric, sum) %>%
+  column_to_rownames(var = "X2") %>%
+  t() %>% as.data.frame() %>%
+  rownames_to_column(var = "OTUID")
+
+bac_guild_otu <- list()
+for(i in colnames(bac_otuXclass)[-1]){
+  bac_guild_otu[[i]] <- bac_otuXclass %>%
+    filter(get(i) > 0) %>%
+    .$OTUID
+}
+
+
+fungi_otu2guild <- read_tsv("data/2015_TIL_fungi_otu2guild.txt")
+fungi_guild_otu <- list()
+for(i in unique(fungi_otu2guild$TrophicMode)){
+  fungi_guild_otu[[i]] <- fungi_otu2guild %>%
+    filter(TrophicMode == i) %>%
+    .$OTUID
+}
+
+
+bac_spear_guild_plot_igraph <- generate_net_for_guild(bac_sampleXotu_plot_f4, bac_guild_otu, r = 0.6, p = 0.05)
+
+fungi_spear_guild_plot_igraph <- generate_net_for_guild(fungi_sampleXotu_plot_f4, fungi_guild_otu)
+```
+
+```{r}
+bac_spear_guild_plot_igraph_pro_ses <- lapply(bac_spear_guild_plot_igraph, function(x){
+  res <- lapply(x, function(y){
+    res <- (y[1,3:5] - y[2, 3:5]) / y[3, 3:5]
+    res$network_size <- y[1,1]
+    res$average_degree <- y[1,2]
+    return(res)
+  })
+  
+  res <- bind_rows(res, .id = "Guild")
+  return(res)
+}) %>%
+  bind_rows(.id = "plot")
+
+
+
+fungi_spear_guild_plot_igraph_pro_ses <- lapply(fungi_spear_guild_plot_igraph, function(x){
+  res <- lapply(x, function(y){
+    res <- (y[1,3:5] - y[2, 3:5]) / y[3, 3:5]
+    res$network_size <- y[1,1]
+    res$average_degree <- y[1,2]
+    return(res)
+  })
+  
+  res <- bind_rows(res, .id = "Guild")
+  return(res)
+}) %>%
+  bind_rows(.id = "plot")
+
+# plot
+bac_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild %in% c("carbon", "nitrogen", "sulfur")) %>%
+  gather(key = "key", value = "value", average_gd:average_degree) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")),
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L"))) %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#E1A970") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_wrap(Guild ~ key, scales = "free", ncol = 5) + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none")
+
+ggsave(filename = "figures/FigS_bac_guild_spear_network_pro_islandClass.pdf", width = 180, height = 120, units = "mm")
+
+
+fungi_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild %in% c("Saprotroph", "Symbiotroph")) %>%
+  gather(key = "key", value = "value", average_gd:average_degree) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")),
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L"))) %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#29ABE2") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_wrap(Guild ~ key, scales = "free_y", ncol = 5) + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none")
+
+ggsave(filename = "figures/FigS_fungi_guild_spear_network_pro_islandClass.pdf", width = 180, height = 80, units = "mm")
+```
+
+```{r}
+bac_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "sulfur") %>%
+  .$network_size %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+bac_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "sulfur") %>%
+  .$average_degree %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+bac_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "sulfur") %>%
+  .$average_gd %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+bac_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "sulfur") %>%
+  .$modu %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+bac_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "sulfur") %>%
+  .$transi %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+#######
+fungi_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "Symbiotroph") %>%
+  .$network_size %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+fungi_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "Symbiotroph") %>%
+  .$average_degree %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+fungi_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "Symbiotroph") %>%
+  .$average_gd %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+ fungi_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "Symbiotroph") %>%
+  .$modu %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+fungi_spear_guild_plot_igraph_pro_ses %>%
+  filter(Guild == "Symbiotroph") %>%
+  .$transi %>%
+  pairwise.wilcox.test(plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+```
+
+
+## Figure S5: SEM, bray-curtis
+```{r sem}
+library(piecewiseSEM)
+
+# ---- bray ----
+bac_plot_alpha_bray <- lapply(bac_sampleXotu_plot, cal_plot_alpha_beta_mean, method = "bray")
+
+bac_plot_alpha_bray_df <- bind_rows(bac_plot_alpha_bray, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(taxon = "Bacteria", key = as_factor(as.character(key)))
+
+
+fungi_plot_alpha_bray <- lapply(fungi_sampleXotu_plot, cal_plot_alpha_beta_mean, method = "bray")
+
+fungi_plot_alpha_bray_df <- bind_rows(fungi_plot_alpha_bray, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(taxon = "Fungi", key = as_factor(as.character(key)))
+
+
+# SEM
+# bac
+
+bac_sem_bray_df2 <- bac_plot_alpha_bray_df %>%
+  select(-sd) %>%
+  spread(key = key, value = mean) %>%
+  left_join(soil3_stan_plot, by = "plot") %>%
+  left_join(soil_euc_plot[,c("plot", "euc")], by = "plot") %>%
+  left_join(select(bac_sem_df2, plot, network_size:transi),
+            by = "plot")
+
+bac_sem_bray_mod2 <- psem(
+  lm(moisture ~ logArea, data = bac_sem_bray_df2),
+  lm(OTUnum ~ logArea + moisture, data = bac_sem_bray_df2),
+  lm(network_size ~ OTUnum + bray, data = bac_sem_bray_df2),
+  lm(average_degree ~ OTUnum + bray, data = bac_sem_bray_df2),
+  lm(average_gd ~  moisture + OTUnum + bray, data = bac_sem_bray_df2),
+  lm(modu ~ network_size + average_degree + average_gd + OTUnum, data = bac_sem_bray_df2),
+  lm(transi ~ network_size + average_degree + average_gd, data = bac_sem_bray_df2),
+  network_size %~~% average_degree
+)
+
+summary(bac_sem_bray_mod2)
+
+
+
+
+# fungi
+fungi_sem_bray_df2 <- fungi_plot_alpha_bray_df %>%
+  select(-sd) %>%
+  spread(key = key, value = mean) %>%
+  left_join(soil3_stan_plot, by = "plot") %>%
+  left_join(soil_euc_plot[,c("plot", "euc")], by = "plot") %>%
+  left_join(select(fungi_sem_df2, plot, network_size:transi), by = "plot")
+
+
+fungi_sem_bray_mod2 <- psem(
+  lm(moisture ~ logArea, data = fungi_sem_bray_df2),
+  lm(bray ~ logArea, data = fungi_sem_bray_df2),
+  lm(OTUnum ~ moisture + logArea, data = fungi_sem_bray_df2),
+  lm(network_size ~ OTUnum + moisture + bray, data = fungi_sem_bray_df2),
+  lm(average_degree ~ OTUnum + bray, data = fungi_sem_bray_df2),
+  lm(average_gd ~ average_degree, data = fungi_sem_bray_df2),
+  lm(modu ~ moisture + network_size + average_degree + average_gd, data = fungi_sem_bray_df2),
+  lm(transi ~  average_gd + modu, data = fungi_sem_bray_df2),
+  OTUnum %~~% bray,
+  network_size %~~% average_degree
+)
+
+summary(fungi_sem_bray_mod2)
+
+
+```
+
+## Figure S6: SEM, unifrac
+```{r}
+# ---- unifrac ----
+bac_plot_alpha_unifrac <- lapply(bac_sampleXotu_plot, cal_plot_alpha_beta_mean, method = "unifrac", tre = bac_tre)
+
+bac_plot_alpha_unifrac_df <- bind_rows(bac_plot_alpha_unifrac, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(taxon = "Bacteria", key = as_factor(as.character(key)))
+
+
+fungi_plot_alpha_unifrac <- lapply(fungi_sampleXotu_plot, cal_plot_alpha_beta_mean, method = "unifrac", tre = fungi_tre)
+
+fungi_plot_alpha_unifrac_df <- bind_rows(fungi_plot_alpha_unifrac, .id = "plot") %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(taxon = "Fungi", key = as_factor(as.character(key)))
+
+
+# bac
+bac_sem_unifrac_df2 <- bac_plot_alpha_unifrac_df %>%
+  select(-sd) %>%
+  spread(key = key, value = mean) %>%
+  left_join(soil3_stan_plot, by = "plot") %>%
+  left_join(soil_euc_plot[,c("plot", "euc")], by = "plot") %>%
+  left_join(select(bac_sem_df2, plot, network_size:transi),
+            by = "plot")
+
+bac_sem_unifrac_mod2 <- psem(
+  lm(moisture ~ logArea, data = bac_sem_unifrac_df2),
+  lm(OTUnum ~ logArea + moisture, data = bac_sem_unifrac_df2),
+  lm(network_size ~ OTUnum + unifrac, data = bac_sem_unifrac_df2),
+  lm(average_degree ~ OTUnum + unifrac, data = bac_sem_unifrac_df2),
+  lm(average_gd ~  moisture + OTUnum + unifrac, data = bac_sem_unifrac_df2),
+  lm(modu ~ network_size + average_degree + average_gd + OTUnum, data = bac_sem_unifrac_df2),
+  lm(transi ~ network_size + average_degree + average_gd, data = bac_sem_unifrac_df2),
+  network_size %~~% average_degree
+)
+
+summary(bac_sem_unifrac_mod2)
+
+
+
+# fungi
+fungi_sem_unifrac_df2 <- fungi_plot_alpha_unifrac_df %>%
+  select(-sd) %>%
+  spread(key = key, value = mean) %>%
+  left_join(soil3_stan_plot, by = "plot") %>%
+  left_join(soil_euc_plot[,c("plot", "euc")], by = "plot") %>%
+  left_join(select(fungi_sem_df2, plot, network_size:transi), by = "plot")
+
+
+
+fungi_sem_unifrac_mod2 <- psem(
+  lm(moisture ~ logArea, data = fungi_sem_unifrac_df2),
+  lm(unifrac ~ moisture, data = fungi_sem_unifrac_df2),
+  lm(OTUnum ~ moisture + logArea, data = fungi_sem_unifrac_df2),
+  lm(network_size ~ OTUnum  + unifrac, data = fungi_sem_unifrac_df2),
+  lm(average_degree ~ OTUnum + unifrac, data = fungi_sem_unifrac_df2),
+  lm(average_gd ~ average_degree, data = fungi_sem_unifrac_df2),
+  lm(modu ~ moisture + network_size + average_degree + average_gd, data = fungi_sem_unifrac_df2),
+  lm(transi ~  average_gd + modu, data = fungi_sem_unifrac_df2),
+  network_size %~~% average_degree
+)
+
+summary(fungi_sem_unifrac_mod2)
+```
+
+## Figure S7: Correlations between soil properties and network properties of soil bacterial and fungal co-occurrence networks
+```{r}
+library(corrplot)
+library(psych)
+library(WGCNA)
+
+pairs.panels(soil9_stan_plot)
+
+# bac net properties Vs soil properties
+corr_bac_5pro_soil9 <- corAndPvalue(soil9_stan_plot, cbind(logArea = plot_info$logArea, bac_spiec_plot_f4_igraph_rmIso_5pro), method = "pearson")
+
+corrplot(corr_bac_5pro_soil9$cor, p.mat = corr_bac_5pro_soil9$p, method = "ellipse", insig = "label_sig", sig.level = c(.001, .01, .05), pch.cex = .9, pch.col = "white", tl.col = "black", tl.srt = 45)
+
+# fungi net properties Vs soil properties
+corr_fungi_5pro_soil9 <- corAndPvalue(soil9_stan_plot, cbind(logArea = plot_info$logArea, fungi_spiec_plot_f4_igraph_rmIso_5pro), method = "spearman")
+
+corrplot(corr_fungi_5pro_soil9$cor, p.mat = corr_fungi_5pro_soil9$p, method = "ellipse", insig = "label_sig", sig.level = c(.001, .01, .05), pch.cex = .9, pch.col = "white", tl.col = "black", tl.srt = 45)
+
+# residual of bac net Vs soil properties
+bac_spiec_plot_f4_igraph_rmIso_5pro_resi <- list()
+for(i in colnames(bac_spiec_plot_f4_igraph_rmIso_5pro)){
+  temp_lm <- lm(bac_spiec_plot_f4_igraph_rmIso_5pro[,i] ~ soil9_stan_plot[,5])
+  bac_spiec_plot_f4_igraph_rmIso_5pro_resi[[i]] <- resid(temp_lm)
+}
+
+bac_spiec_plot_f4_igraph_rmIso_5pro_resi <- do.call(cbind, bac_spiec_plot_f4_igraph_rmIso_5pro_resi)
+
+corr_bac_5pro_resi_soil9 <- corAndPvalue(bac_spiec_plot_f4_igraph_rmIso_5pro_resi, plot_info$logArea)
+
+corrplot(corr_bac_5pro_resi_soil9$cor, p.mat = corr_bac_5pro_resi_soil9$p, method = "ellipse", insig = "label_sig", sig.level = c(.001, .01, .05), pch.cex = .9, pch.col = "white", tl.col = "black", tl.srt = 45)
+
+# residual of fungi net Vs soil properties
+fungi_spiec_plot_f4_igraph_rmIso_5pro_resi <- list()
+for(i in colnames(fungi_spiec_plot_f4_igraph_rmIso_5pro)){
+  temp_lm <- lm(fungi_spiec_plot_f4_igraph_rmIso_5pro[,i] ~ soil9_stan_plot[,5])
+  fungi_spiec_plot_f4_igraph_rmIso_5pro_resi[[i]] <- resid(temp_lm)
+}
+
+fungi_spiec_plot_f4_igraph_rmIso_5pro_resi <- do.call(cbind, fungi_spiec_plot_f4_igraph_rmIso_5pro_resi)
+
+corr_fungi_5pro_resi_soil9 <- corAndPvalue(fungi_spiec_plot_f4_igraph_rmIso_5pro_resi, plot_info$logArea)
+
+corrplot(corr_fungi_5pro_resi_soil9$cor, p.mat = corr_fungi_5pro_resi_soil9$p, method = "ellipse", insig = "label_sig", sig.level = c(.001, .01, .05), pch.cex = .9, pch.col = "white", tl.col = "black", tl.srt = 45)
+
+```
+
+
+## Figure S9: The influences of rare taxa on the relationships between network properties and island area. 
+```{r not filter rare species}
+# ---- bac ----
+# construct network
+bac_spear_plot_f4 <- lapply(bac_sampleXotu_plot_f4, cal_rp_from_sampleXotu)
+
+bac_spear_plot_f4_igraph_rmIso <- lapply(bac_spear_plot_f4, function(x){
+  ig <- corr_to_igraph(x, r = 0.9, p = 0.05)
+  ig_rmIso <- rm_isolated_vertex(ig)
+  return(ig_rmIso)
+})
+
+
+bac_spear_plot_f4_igraph_rmIso_3pro_ses <- lapply(bac_spear_plot_f4_igraph_rmIso, 
+                                               cal_obsNet_randNet_property)
+bac_spear_plot_f4_igraph_rmIso_5pro <- lapply(bac_spear_plot_f4_igraph_rmIso_3pro_ses, function(x){
+  res <- (x[1,3:5] - x[2, 3:5]) / x[3, 3:5]
+  res$network_size <- x[1,1]
+  res$average_degree <- x[1,2]
+  return(res)
+}) %>%
+  bind_rows(.id = "plot")
+
+
+bac_spear_plot <- lapply(bac_sampleXotu_plot, cal_rp_from_sampleXotu)
+
+
+bac_spear_plot_igraph_rmIso <- lapply(bac_spear_plot, function(x){
+  ig <- corr_to_igraph(x, r = 0.9, p = 0.05)
+  ig_rmIso <- rm_isolated_vertex(ig)
+  return(ig_rmIso)
+})
+
+
+bac_spear_plot_igraph_rmIso_3pro_ses <- lapply(bac_spear_plot_igraph_rmIso, 
+                                               cal_obsNet_randNet_property)
+bac_spear_plot_igraph_rmIso_5pro <- lapply(bac_spear_plot_igraph_rmIso_3pro_ses, function(x){
+  res <- (x[1,3:5] - x[2, 3:5]) / x[3, 3:5]
+  res$network_size <- x[1,1]
+  res$average_degree <- x[1,2]
+  return(res)
+}) %>%
+  bind_rows(.id = "plot")
+
+bac_spear_plot_f4_igraph_rmIso_5pro_long <- bac_spear_plot_f4_igraph_rmIso_5pro %>%
+  gather(key = "key", value = "value", -plot) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")), 
+         taxon = "Bacteria_f4",
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L")))
+
+bac_spear_plot_igraph_rmIso_5pro_long <- bac_spear_plot_igraph_rmIso_5pro %>%
+  gather(key = "key", value = "value", -plot) %>%
+  left_join(plot_metadata, by = "plot") %>%
+    mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")), 
+         taxon = "Bacteria",
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L")))
+
+
+bac_spear_plot_f4_igraph_rmIso_5pro_long %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#E1A970") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_grid(key~taxon, scales = "free_y") + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none") +
+bac_spear_plot_igraph_rmIso_5pro_long %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#E1A970") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_grid(key~taxon, scales = "free_y") + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none")
+
+ggsave(filename = "figures/FigS_bac_spear_5pro_islandClass.pdf", height = 160, width = 100, units = "mm")
+# ---- fungi ----
+
+fungi_spear_plot_f4 <- lapply(fungi_sampleXotu_plot_f4, cal_rp_from_sampleXotu)
+
+fungi_spear_plot_f4_igraph_rmIso <- lapply(fungi_spear_plot_f4, function(x){
+  ig <- corr_to_igraph(x, r = 0.9, p = 0.05)
+  ig_rmIso <- rm_isolated_vertex(ig)
+  return(ig_rmIso)
+})
+
+fungi_spear_plot <- lapply(fungi_sampleXotu_plot, cal_rp_from_sampleXotu)
+
+fungi_spear_plot_igraph_rmIso <- lapply(fungi_spear_plot, function(x){
+  ig <- corr_to_igraph(x, r = 0.9, p = 0.05)
+  ig_rmIso <- rm_isolated_vertex(ig)
+  return(ig_rmIso)
+})
+
+
+fungi_spear_plot_f4_igraph_rmIso_3pro_ses <- lapply(fungi_spear_plot_f4_igraph_rmIso, cal_obsNet_randNet_property)
+fungi_spear_plot_f4_igraph_rmIso_5pro <- lapply(fungi_spear_plot_f4_igraph_rmIso_3pro_ses, function(x){
+  res <- (x[1,3:5] - x[2, 3:5]) / x[3, 3:5]
+  res$network_size <- x[1,1]
+  res$average_degree <- x[1,2]
+  return(res)
+}) %>%
+  bind_rows(.id = "plot")
+
+
+fungi_spear_plot_igraph_rmIso_3pro_ses <- lapply(fungi_spear_plot_igraph_rmIso, 
+                                               cal_obsNet_randNet_property)
+
+
+fungi_spear_plot_igraph_rmIso_5pro <- lapply(fungi_spear_plot_igraph_rmIso_3pro_ses, function(x){
+  res <- (x[1,3:5] - x[2, 3:5]) / x[3, 3:5]
+  res$network_size <- x[1,1]
+  res$average_degree <- x[1,2]
+  return(res)
+}) %>%
+  bind_rows(.id = "plot")
+
+
+fungi_spear_plot_f4_igraph_rmIso_5pro_long <- fungi_spear_plot_f4_igraph_rmIso_5pro %>%
+  gather(key = "key", value = "value", -plot) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")), 
+         taxon = "Fungi_f4",
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L")))
+
+fungi_spear_plot_igraph_rmIso_5pro_long <- fungi_spear_plot_igraph_rmIso_5pro %>%
+  gather(key = "key", value = "value", -plot) %>%
+  left_join(plot_metadata, by = "plot") %>%
+  mutate(key = factor(key, levels = c("network_size", "average_degree", "average_gd", "modu", "transi")),
+         taxon = "Fungi",
+         Island_Class = factor(Island_Class, levels = c("S", "M", "L")))
+
+
+fungi_spear_plot_f4_igraph_rmIso_5pro_long %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#29ABE2") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_grid(key~taxon, scales = "free_y") + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none") +
+fungi_spear_plot_igraph_rmIso_5pro_long %>%
+  ggplot(aes(x=Island_Class, y = value)) +
+  stat_boxplot(geom = "errorbar", width = 0.35, size = 0.1) + 
+  geom_boxplot(size = 0.1, fill = "#29ABE2") + 
+  geom_jitter(color = "grey50", size = 0.2)  +
+  facet_grid(key~taxon, scales = "free_y") + 
+  theme_bw(base_size = 8) + 
+  theme(panel.grid = element_blank(), legend.position = "none")
+
+ggsave(filename = "figures/FigS_fungi_spear_5pro_islandClass.pdf", height = 160, width = 100, units = "mm")
+```
+
+
+```{r stat}
+pairwise.wilcox.test(bac_spear_plot_f4_igraph_rmIso_5pro$network_size, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spear_plot_f4_igraph_rmIso_5pro$average_degree, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spear_plot_f4_igraph_rmIso_5pro$average_gd, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spear_plot_f4_igraph_rmIso_5pro$modu, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(bac_spear_plot_f4_igraph_rmIso_5pro$transi, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+
+
+pairwise.wilcox.test(fungi_spear_plot_igraph_rmIso_5pro$network_size, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spear_plot_igraph_rmIso_5pro$average_degree, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spear_plot_igraph_rmIso_5pro$average_gd, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spear_plot_igraph_rmIso_5pro$modu, plot_metadata$Island_Class, p.adjust.method = "fdr")
+
+pairwise.wilcox.test(fungi_spear_plot_igraph_rmIso_5pro$transi, plot_metadata$Island_Class, p.adjust.method = "fdr")
+```
+
+## Figure 10: Soil bacterial co-occurrence networks of all plots
+```{r network figures}
+library(igraph)
+library(ggnetwork)
+library(intergraph)
+
+# ---- bac ----
+bac_plot_name <- plot_metadata %>% 
+  arrange(logArea) %>% 
+  .$plot
+
+bac_plot_igraph_df <- c()
+for(i in bac_plot_name){
+  test_igraph <- bac_spiec_plot_f4_igraph_rmIso[[i]]
+  test_igraph <- set_vertex_attr(test_igraph, "degree", value = log1p(igraph::degree(test_igraph)))
+  test_igraph_df <- ggnetwork(test_igraph)
+  test_igraph_df$plot <- plot_metadata[plot_metadata$plot == i, "plot2"]
+  bac_plot_igraph_df <- rbind(bac_plot_igraph_df, test_igraph_df)
+}
+
+bac_plot_igraph_df$plot <- as_factor(bac_plot_igraph_df$plot)
+
+ggplot(bac_plot_igraph_df, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey50", alpha = 0.5, size = 0.05) +
+  geom_nodes(size = 0.1, color = "#E1A970", show.legend = F) +
+  facet_wrap(~plot, ncol = 8) +
+  theme_facet(base_size = 6)
+
+ggsave("figures/FigS_bac_plot_igraph.pdf", width = 180, height = 235, units = "mm")
+
+
+```
+
+## Figure 11: Fig. S11 Soil fungal co-occurrence networks of all plots
+```{r}
+
+# ---- fungi ----
+fungi_plot_name <- plot_metadata %>% 
+  arrange(logArea) %>% 
+  .$plot
+
+fungi_plot_igraph_df <- c()
+for(i in fungi_plot_name){
+  test_igraph <- fungi_spiec_plot_f4_igraph_rmIso[[i]]
+  test_igraph <- set_vertex_attr(test_igraph, "degree", value = log1p(igraph::degree(test_igraph)))
+  test_igraph_df <- ggnetwork(test_igraph)
+  test_igraph_df$plot <-  plot_metadata[plot_metadata$plot == i, "plot2"]
+  fungi_plot_igraph_df <- rbind(fungi_plot_igraph_df, test_igraph_df)
+}
+
+fungi_plot_igraph_df$plot <- as_factor(fungi_plot_igraph_df$plot)
+
+ggplot(fungi_plot_igraph_df, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey50", alpha = 0.5, size = 0.05) +
+  geom_nodes(size = 0.1, color = "#29ABE2", show.legend = F) +
+  facet_wrap(~plot, ncol = 8) +
+  theme_facet(base_size = 6)
+
+ggsave("figures/FigS_fungi_plot_igraph.pdf", width = 180, height = 235, units = "mm")
+```
+
